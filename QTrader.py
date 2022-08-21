@@ -26,7 +26,8 @@ class QTrades(object):
                                 (self.returns.risk_adjusted < self.returns.risk_adjusted_low).astype(int)
 
     def sharpe(self,expected_returns):
-        return (( expected_returns - self.returns.loc[expected_returns.index,'risk_adjusted_moving'] ) / self.returns.loc[expected_returns.index,'risk_adjusted_stdev']).dropna()
+        # return (( expected_returns - self.returns.loc[expected_returns.index,'risk_adjusted_moving'] ) / self.returns.loc[expected_returns.index,'risk_adjusted_stdev']).dropna()
+        return expected_returns * (self.returns.Stocks - self.returns.TBills)
 
     def buy_and_hold(self,dates):
         return pd.Series(1,index=dates)
@@ -48,6 +49,10 @@ class QTrades(object):
         # 0 - Buy, 1 - Short -1 - Do nothing
         # Q learning will learn the Q table
         q = {0: { 1:0, 0:0, -1:0}}
+
+        # Dyna
+        T = np.zeros((3,3,3))+ 0.0001
+        R = np.zeros((3,3))
         
         # iterate over training set for 100 episodes
         for i in range(100):
@@ -71,14 +76,14 @@ class QTrades(object):
                     else:
                         action = random.randint(-1,1)
 
-                    reward = last_row.action + (return_data.Stocks - return_data.TBills)
+                    reward = last_row.action * (return_data.Stocks - return_data.TBills)
 
                     factors.loc[date, 'reward'] = reward
                     factors.loc[date, 'action'] = action
                     factors.loc[date, 'state'] = return_data.state
 
                     # perform Q learning
-                    alpha = 1
+                    alpha = 0.5
                     discount = 0.9
 
                     update = alpha * (factors.loc[date, 'reward'] + discount * max(q[row.state].values()) - q[state][action])
@@ -86,11 +91,27 @@ class QTrades(object):
                     if not np.isnan(update):
                         q[state][action] += update 
 
+                    # Dyna
+                    action_idx = int(last_row.action + 1)
+                    state_idx = int(last_row.state + 1)
+                    state_idx = int(state + 1)
+
+                    T[state_idx][action_idx][state_idx] += 1
+                    R[state_idx][action_idx] = (1-alpha)*R[state_idx][action_idx] + alpha * reward
+
                 last_date,last_row = date, factors.loc[date]
-        
+
+            # augmentation with hallucination
+            for j in range(100):
+                state_idx = random.randint(0,2)
+                action_idx = random.randint(0,2)
+                new_state = np.random.choice([-1,0,1], 1, p = T[state_idx][action_idx]/T[state_idx][action_idx].sum())[0]
+                r = R[state_idx][action_idx]
+                # q[state_idx-1][action_idx-1] += alpha * (r + discount * max(q[new_state].values()) - q[state_idx-1][action_idx-1])  
+
             # converge the traing based on shap ratios
             sharpe = self.sharpe(factors.action)
-            
+
             if sharpe.any() > 0.2:
                 break
 
@@ -98,7 +119,7 @@ class QTrades(object):
         
         testing = pd.DataFrame({'action':0,'state':0},index=training_indexes)
         testing['state'] = self.returns.loc[training_indexes,'state']
-        testing['action'] = testing['state'].apply(lambda state: max(q[state],key=q[state].get('value')))
+        testing['action'] = testing['state'].apply(lambda state: max(q[state],key=q[state].get))
 
         return testing.action
 
@@ -124,7 +145,7 @@ class QTrades(object):
 
         portfolios_values.plot()
         plt.annotate("Buy and hold sharpe ratio : {} \n Qtrader {}".format(self.sharpe(portfolios.buy_and_hold), 
-        self.sharpe(portfolios.qtrader)),xy=(0.25,0.95),xycoords='axes fraction')
+        self.sharpe(portfolios.qtrader)),xy=(0.25,0.55),xycoords='axes fraction')
         plt.show()
 
 if __name__ == '__main__':
